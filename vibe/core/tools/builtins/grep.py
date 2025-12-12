@@ -324,3 +324,19 @@ class Grep(
     def get_status_text(cls) -> str:
         """Return status message for spinner."""
         return "Searching files"
+
+    def is_path_within_workdir(self, args: GrepArgs) -> bool:
+        """Check if the search path is within the project directory."""
+        from pathlib import Path
+
+        path = Path(args.path).expanduser()
+        if not path.is_absolute():
+            path = self.config.effective_workdir / path
+        path = path.resolve()
+
+        workdir = self.config.effective_workdir.resolve()
+        try:
+            path.relative_to(workdir)
+            return True
+        except ValueError:
+            return False

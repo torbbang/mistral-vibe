@@ -7,6 +7,8 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
 
+from vibe.acp.utils import VibeSessionMode
+
 from vibe.cli.autocompletion.path_completion import PathCompletionController
 from vibe.cli.autocompletion.slash_command import SlashCommandController
 from vibe.cli.commands import CommandRegistry
@@ -22,6 +24,9 @@ from vibe.core.autocompletion.completers import CommandCompleter, PathCompleter
 class ChatInputContainer(Vertical):
     ID_INPUT_BOX = "input-box"
     BORDER_WARNING_CLASS = "border-warning"
+    BORDER_APPROVAL_CLASS = "mode-approval"
+    BORDER_EDITS_CLASS = "mode-edits"
+    BORDER_AUTO_CLASS = "mode-auto"
 
     class Submitted(Message):
         def __init__(self, value: str) -> None:
@@ -155,3 +160,21 @@ class ChatInputContainer(Vertical):
             input_box.add_class(self.BORDER_WARNING_CLASS)
         else:
             input_box.remove_class(self.BORDER_WARNING_CLASS)
+
+    def set_mode(self, mode: VibeSessionMode) -> None:
+        """Set the border color based on the current mode."""
+        input_box = self.get_widget_by_id(self.ID_INPUT_BOX)
+        
+        # Remove all mode classes first
+        input_box.remove_class(self.BORDER_APPROVAL_CLASS)
+        input_box.remove_class(self.BORDER_EDITS_CLASS)
+        input_box.remove_class(self.BORDER_AUTO_CLASS)
+
+        # Add the appropriate class for the current mode
+        match mode:
+            case VibeSessionMode.APPROVAL_REQUIRED:
+                input_box.add_class(self.BORDER_APPROVAL_CLASS)
+            case VibeSessionMode.ACCEPT_EDITS:
+                input_box.add_class(self.BORDER_EDITS_CLASS)
+            case VibeSessionMode.AUTO_APPROVE:
+                input_box.add_class(self.BORDER_AUTO_CLASS)

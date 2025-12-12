@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from vibe.acp.utils import VibeSessionMode
 from vibe.core.config import VibeConfig
 from vibe.core.interaction_logger import InteractionLogger
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
@@ -126,6 +127,10 @@ class Agent:
 
         self.auto_approve = auto_approve
         self.approval_callback: ApprovalCallback | None = None
+
+        # Mode-specific tool allowlists
+        self.ACCEPT_EDITS_TOOLS = {"grep", "read_file", "search_replace", "todo", "write_file"}
+        self._current_mode: VibeSessionMode | None = None
 
         self.session_id = str(uuid4())
 
@@ -719,11 +724,44 @@ class Agent:
                 f"API error from {provider.name} (model: {active_model.name}): {e}"
             ) from e
 
+    def _is_path_within_workdir(self, tool: BaseTool, args: Any) -> bool:
+        """Check if the file path in args is within the project directory.
+
+        Delegates to the tool's implementation for proper handling of
+        tool-specific argument structures.
+        """
+        return tool.is_path_within_workdir(args)
+
     async def _should_execute_tool(
         self, tool: BaseTool, args: dict[str, Any], tool_call_id: str
     ) -> ToolDecision:
         if self.auto_approve:
             return ToolDecision(verdict=ToolExecutionResponse.EXECUTE)
+
+        # Check ACCEPT_EDITS mode
+        tool_name = tool.get_name()
+        if self._current_mode == VibeSessionMode.ACCEPT_EDITS:
+            if tool_name in self.ACCEPT_EDITS_TOOLS:
+                # Still validate args and check denylist for safety
+                args_model, _ = tool._get_tool_args_results()
+                validated_args = args_model.model_validate(args)
+                allowlist_denylist_result = tool.check_allowlist_denylist(validated_args)
+
+                if allowlist_denylist_result == ToolPermission.NEVER:
+                    denylist_patterns = tool.config.denylist
+                    denylist_str = ", ".join(repr(pattern) for pattern in denylist_patterns)
+                    return ToolDecision(
+                        verdict=ToolExecutionResponse.SKIP,
+                        feedback=f"Tool '{tool_name}' blocked by denylist: [{denylist_str}]",
+                    )
+
+                # Check if file path is within project directory
+                if not self._is_path_within_workdir(tool, validated_args):
+                    # File is outside project directory - require approval
+                    return await self._ask_approval(tool_name, args, tool_call_id)
+
+                # Auto-approve in ACCEPT_EDITS mode (within project directory)
+                return ToolDecision(verdict=ToolExecutionResponse.EXECUTE)
 
         args_model, _ = tool._get_tool_args_results()
         validated_args = args_model.model_validate(args)
@@ -848,6 +886,11 @@ class Agent:
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
+
+    def set_mode(self, mode: VibeSessionMode) -> None:
+        """Set the approval mode and update auto_approve accordingly."""
+        self._current_mode = mode
+        self.auto_approve = (mode == VibeSessionMode.AUTO_APPROVE)
 
     async def clear_history(self) -> None:
         await self.interaction_logger.save_interaction(

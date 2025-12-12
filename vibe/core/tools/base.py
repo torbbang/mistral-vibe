@@ -281,3 +281,15 @@ class BaseTool[
         Base implementation returns None. Override in subclasses for specific logic.
         """
         return None
+
+    def is_path_within_workdir(self, args: ToolArgs) -> bool:
+        """Check if the file path(s) in args are within the project directory.
+
+        Returns:
+            True if path is within workdir or tool has no path restrictions
+            False if path is outside workdir
+
+        Base implementation returns True (no restriction).
+        Override in file operation tools to enforce workdir boundaries.
+        """
+        return True

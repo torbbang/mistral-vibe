@@ -90,6 +90,18 @@ Screen {
     &.border-warning {
         border: round $warning;
     }
+
+    &.mode-approval {
+        border: round $primary;
+    }
+
+    &.mode-edits {
+        border: round $warning;
+    }
+
+    &.mode-auto {
+        border: round $error;
+    }
 }
 
 #input-body {
@@ -651,16 +663,19 @@ ModeIndicator {
     background: transparent;
     padding: 0;
     margin: 0 0 0 1;
-    color: $warning;
     align: left middle;
+}
 
-    &.mode-on {
-        color: $warning;
-    }
+.mode-approval {
+    color: $primary;
+}
 
-    &.mode-off {
-        color: $text-muted;
-    }
+.mode-edits {
+    color: $warning;
+}
+
+.mode-auto {
+    color: $error;
 }
 
 PathDisplay {

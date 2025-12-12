@@ -164,6 +164,7 @@ class VibeAcpAgent(AcpAgent):
             }) from e
 
         agent = VibeAgent(config=config, auto_approve=False, enable_streaming=True)
+        agent.set_mode(VibeSessionMode.APPROVAL_REQUIRED)
         # NOTE: For now, we pin session.id to agent.session_id right after init time.
         # We should just use agent.session_id everywhere, but it can still change during
         # session lifetime (e.g. agent.compact is called).
@@ -271,8 +272,18 @@ class VibeAcpAgent(AcpAgent):
         if not VibeSessionMode.is_valid(params.modeId):
             return None
 
-        session.mode_id = VibeSessionMode(params.modeId)
-        session.agent.auto_approve = params.modeId == VibeSessionMode.AUTO_APPROVE
+        new_mode = VibeSessionMode(params.modeId)
+        session.mode_id = new_mode
+
+        # Use mode setter instead of direct assignment
+        session.agent.set_mode(new_mode)
+
+        # Update approval callback based on mode
+        if new_mode == VibeSessionMode.AUTO_APPROVE:
+            session.agent.approval_callback = None
+        else:
+            # ACCEPT_EDITS and APPROVAL_REQUIRED both need callback
+            session.agent.approval_callback = self._create_approval_callback(session.agent.session_id)
 
         return SetSessionModeResponse()
 

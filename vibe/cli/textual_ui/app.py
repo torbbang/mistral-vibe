@@ -13,6 +13,7 @@ from textual.events import MouseUp
 from textual.widget import Widget
 from textual.widgets import Static
 
+from vibe.acp.utils import VibeSessionMode
 from vibe.cli.clipboard import copy_selection_to_clipboard
 from vibe.cli.commands import CommandRegistry
 from vibe.cli.textual_ui.handlers.event_handler import EventHandler
@@ -89,6 +90,11 @@ class VibeApp(App):
         super().__init__(**kwargs)
         self.config = config
         self.auto_approve = auto_approve
+        # Initialize approval mode tracking
+        self._approval_mode = (
+            VibeSessionMode.AUTO_APPROVE if auto_approve
+            else VibeSessionMode.APPROVAL_REQUIRED
+        )
         self.enable_streaming = enable_streaming
         self.agent: Agent | None = None
         self._agent_running = False
@@ -134,7 +140,11 @@ class VibeApp(App):
 
         with Horizontal(id="loading-area"):
             yield Static(id="loading-area-content")
-            yield ModeIndicator(auto_approve=self.auto_approve)
+            initial_mode = (
+                VibeSessionMode.AUTO_APPROVE if self.auto_approve
+                else VibeSessionMode.APPROVAL_REQUIRED
+            )
+            yield ModeIndicator(mode=initial_mode)
 
         yield Static(id="todo-area")
 
@@ -415,7 +425,11 @@ class VibeApp(App):
                 enable_streaming=self.enable_streaming,
             )
 
-            if not self.auto_approve:
+            # Set the initial mode
+            agent.set_mode(self._approval_mode)
+
+            # Set approval callback if not in AUTO_APPROVE mode
+            if self._approval_mode != VibeSessionMode.AUTO_APPROVE:
                 agent.approval_callback = self._approval_callback
 
             if self._loaded_messages:
@@ -924,18 +938,41 @@ class VibeApp(App):
         if self._current_bottom_app != BottomApp.Input:
             return
 
-        self.auto_approve = not self.auto_approve
+        # Initialize mode from current state if needed
+        if not hasattr(self, '_approval_mode'):
+            self._approval_mode = (
+                VibeSessionMode.AUTO_APPROVE if self.auto_approve
+                else VibeSessionMode.APPROVAL_REQUIRED
+            )
 
+        # Cycle through modes: APPROVAL_REQUIRED -> ACCEPT_EDITS -> AUTO_APPROVE
+        mode_order = [
+            VibeSessionMode.APPROVAL_REQUIRED,
+            VibeSessionMode.ACCEPT_EDITS,
+            VibeSessionMode.AUTO_APPROVE,
+        ]
+        current_index = mode_order.index(self._approval_mode)
+        next_index = (current_index + 1) % len(mode_order)
+        self._approval_mode = mode_order[next_index]
+
+        # Update auto_approve for backward compatibility
+        self.auto_approve = (self._approval_mode == VibeSessionMode.AUTO_APPROVE)
+
+        # Update UI widgets
         if self._mode_indicator:
-            self._mode_indicator.set_auto_approve(self.auto_approve)
+            self._mode_indicator.set_mode(self._approval_mode)
 
         if self._chat_input_container:
-            self._chat_input_container.set_show_warning(self.auto_approve)
+            self._chat_input_container.set_show_warning(
+                self._approval_mode == VibeSessionMode.AUTO_APPROVE
+            )
+            self._chat_input_container.set_mode(self._approval_mode)
 
+        # Update agent
         if self.agent:
-            self.agent.auto_approve = self.auto_approve
+            self.agent.set_mode(self._approval_mode)
 
-            if self.auto_approve:
+            if self._approval_mode == VibeSessionMode.AUTO_APPROVE:
                 self.agent.approval_callback = None
             else:
                 self.agent.approval_callback = self._approval_callback
