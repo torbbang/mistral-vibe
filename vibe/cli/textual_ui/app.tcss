@@ -90,6 +90,22 @@ Screen {
     &.border-warning {
         border: round $warning;
     }
+
+    &.border-mode-normal {
+        border: round $primary;
+    }
+
+    &.border-mode-auto-approve {
+        border: round $error;
+    }
+
+    &.border-mode-accept-edits {
+        border: round $warning;
+    }
+
+    &.border-mode-plan {
+        border: round $primary;
+    }
 }
 
 #input-body {
@@ -654,12 +670,21 @@ ModeIndicator {
     color: $warning;
     align: left middle;
 
-    &.mode-on {
+    &.mode-normal {
+        color: $primary;
+    }
+
+    &.mode-auto-approve {
+        color: $error;
+        text-style: bold;
+    }
+
+    &.mode-accept-edits {
         color: $warning;
     }
 
-    &.mode-off {
-        color: $text-muted;
+    &.mode-plan {
+        color: $primary;
     }
 }
 

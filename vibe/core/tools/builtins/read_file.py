@@ -102,6 +102,17 @@ class ReadFile(
 
         return None
 
+    def is_path_within_workdir(self, args: ReadFileArgs) -> bool:
+        """Check if the file path is within the project workdir."""
+        return self._is_single_path_within_workdir(args.path)
+
+    def get_file_paths(self, args: ReadFileArgs) -> list[Path]:
+        """Extract file path from read arguments for pattern validation."""
+        file_path = Path(args.path).expanduser()
+        if not file_path.is_absolute():
+            file_path = self.config.effective_workdir / file_path
+        return [file_path.resolve()]
+
     def _prepare_and_validate_path(self, args: ReadFileArgs) -> Path:
         self._validate_inputs(args)
 

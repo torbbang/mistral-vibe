@@ -107,6 +107,17 @@ class WriteFile(
 
         return None
 
+    def is_path_within_workdir(self, args: WriteFileArgs) -> bool:
+        """Check if the file path is within the project workdir."""
+        return self._is_single_path_within_workdir(args.path)
+
+    def get_file_paths(self, args: WriteFileArgs) -> list[Path]:
+        """Extract file path from write arguments for pattern validation."""
+        file_path = Path(args.path).expanduser()
+        if not file_path.is_absolute():
+            file_path = self.config.effective_workdir / file_path
+        return [file_path.resolve()]
+
     @final
     async def run(self, args: WriteFileArgs) -> WriteFileResult:
         file_path, file_existed, content_bytes = self._prepare_and_validate_path(args)

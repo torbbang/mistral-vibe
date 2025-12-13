@@ -22,6 +22,7 @@ from vibe.core.autocompletion.completers import CommandCompleter, PathCompleter
 class ChatInputContainer(Vertical):
     ID_INPUT_BOX = "input-box"
     BORDER_WARNING_CLASS = "border-warning"
+    MODE_BORDER_CLASS_PREFIX = "border-mode-"
 
     class Submitted(Message):
         def __init__(self, value: str) -> None:
@@ -155,3 +156,15 @@ class ChatInputContainer(Vertical):
             input_box.add_class(self.BORDER_WARNING_CLASS)
         else:
             input_box.remove_class(self.BORDER_WARNING_CLASS)
+
+    def set_mode_border(self, mode_id: str) -> None:
+        input_box = self.get_widget_by_id(self.ID_INPUT_BOX)
+
+        # Remove all existing mode border classes
+        for class_name in list(input_box.classes):
+            if class_name.startswith(self.MODE_BORDER_CLASS_PREFIX):
+                input_box.remove_class(class_name)
+
+        # Add the new mode border class
+        mode_border_class = f"{self.MODE_BORDER_CLASS_PREFIX}{mode_id}"
+        input_box.add_class(mode_border_class)

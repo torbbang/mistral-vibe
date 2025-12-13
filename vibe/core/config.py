@@ -332,6 +332,16 @@ class VibeConfig(BaseSettings):
         ),
     )
 
+    initial_mode: str = Field(
+        default="normal",
+        description="Mode to use when starting a new session (e.g., 'normal', 'auto-approve', 'accept-edits', or custom mode ID)",
+    )
+
+    modes: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Custom mode configurations keyed by mode ID",
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="VIBE_", case_sensitive=False, extra="ignore"
     )
@@ -454,6 +464,51 @@ class VibeConfig(BaseSettings):
                 normalized[tool_name] = BaseToolConfig.model_validate(tool_config)
             else:
                 normalized[tool_name] = BaseToolConfig()
+
+        return normalized
+
+    @field_validator("initial_mode", mode="after")
+    @classmethod
+    def _validate_initial_mode(cls, v: str) -> str:
+        """Basic validation for initial_mode field."""
+        if not v or len(v.strip()) == 0:
+            return "normal"
+        return v.strip().lower()
+
+    @field_validator("modes", mode="before")
+    @classmethod
+    def _normalize_modes(cls, v: Any) -> dict[str, dict[str, Any]]:
+        """Normalize and validate mode configurations from TOML."""
+        import re
+
+        if not isinstance(v, dict):
+            return {}
+
+        normalized: dict[str, dict[str, Any]] = {}
+        predefined_mode_ids = {"normal", "auto-approve", "accept-edits", "plan"}
+
+        for mode_id, mode_config in v.items():
+            if not isinstance(mode_config, dict):
+                continue
+
+            # Validate mode ID format early
+            if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", mode_id):
+                raise ValueError(
+                    f"Invalid mode ID '{mode_id}'. Must be lowercase alphanumeric "
+                    "with hyphens (e.g., 'my-custom-mode')"
+                )
+
+            # Check for protected mode IDs
+            if mode_id in predefined_mode_ids:
+                raise ValueError(
+                    f"Mode ID '{mode_id}' is reserved. Cannot override predefined modes. "
+                    "Please use a different ID for custom modes."
+                )
+
+            # Add the ID to the config (from the dict key)
+            mode_config_copy = dict(mode_config)
+            mode_config_copy["id"] = mode_id
+            normalized[mode_id] = mode_config_copy
 
         return normalized
 

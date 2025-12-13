@@ -324,3 +324,14 @@ class Grep(
     def get_status_text(cls) -> str:
         """Return status message for spinner."""
         return "Searching files"
+
+    def is_path_within_workdir(self, args: GrepArgs) -> bool:
+        """Check if the search path is within the project workdir."""
+        return self._is_single_path_within_workdir(args.path)
+
+    def get_file_paths(self, args: GrepArgs) -> list[Path]:
+        """Extract search path from grep arguments for pattern validation."""
+        file_path = Path(args.path).expanduser()
+        if not file_path.is_absolute():
+            file_path = self.config.effective_workdir / file_path
+        return [file_path.resolve()]

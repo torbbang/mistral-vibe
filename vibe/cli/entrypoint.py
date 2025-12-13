@@ -41,7 +41,13 @@ def parse_arguments() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=False,
-        help="Automatically approve all tool executions.",
+        help="Automatically approve all tool executions (alias for --mode auto-approve).",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        metavar="MODE",
+        help="Set the initial operational mode (e.g., 'normal', 'auto-approve', 'accept-edits', 'plan', or custom mode ID).",
     )
     parser.add_argument(
         "--max-turns",
@@ -244,6 +250,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             run_textual_ui(
                 config,
                 auto_approve=args.auto_approve,
+                initial_mode=getattr(args, "mode", None),
                 enable_streaming=True,
                 initial_prompt=args.initial_prompt or stdin_prompt,
                 loaded_messages=loaded_messages,

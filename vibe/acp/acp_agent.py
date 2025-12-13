@@ -38,6 +38,7 @@ from acp.schema import (
     Implementation,
     ModelInfo,
     PromptCapabilities,
+    SessionMode,
     SessionModelState,
     SessionModeState,
     TextContentBlock,
@@ -52,9 +53,10 @@ from vibe.acp.tools.session_update import (
     tool_call_session_update,
     tool_result_session_update,
 )
-from vibe.acp.utils import TOOL_OPTIONS, ToolOption, VibeSessionMode
+from vibe.acp.utils import TOOL_OPTIONS, ToolOption
 from vibe.core import __version__
 from vibe.core.agent import Agent as VibeAgent
+from vibe.core.modes import ModeConfig, ModeID, list_available_modes
 from vibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from vibe.core.config import MissingAPIKeyError, VibeConfig, load_api_keys_from_env
 from vibe.core.tools.base import BaseToolConfig, ToolPermission
@@ -72,7 +74,7 @@ class AcpSession(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     id: str
     agent: VibeAgent
-    mode_id: VibeSessionMode = VibeSessionMode.APPROVAL_REQUIRED
+    mode_id: str = ModeID.NORMAL
     task: asyncio.Task[None] | None = None
 
 
@@ -189,7 +191,10 @@ class VibeAcpAgent(AcpAgent):
             ),
             modes=SessionModeState(
                 currentModeId=session.mode_id,
-                availableModes=VibeSessionMode.get_all_acp_session_modes(),
+                availableModes=[
+                    SessionMode(id=mode.id, name=mode.name, description=mode.description)
+                    for mode in list_available_modes(session.agent._mode_registry)
+                ],
             ),
         )
         return response
@@ -278,13 +283,31 @@ class VibeAcpAgent(AcpAgent):
     async def setSessionMode(
         self, params: SetSessionModeRequest
     ) -> SetSessionModeResponse | None:
+        """Set the session mode using Vibe's mode system."""
         session = self._get_session(params.sessionId)
 
-        if not VibeSessionMode.is_valid(params.modeId):
+        # Validate mode exists in agent's registry
+        try:
+            mode_config = session.agent.get_current_mode()
+            if params.modeId not in session.agent._mode_registry:
+                return None
+        except (ValueError, KeyError):
             return None
 
-        session.mode_id = VibeSessionMode(params.modeId)
-        session.agent.auto_approve = params.modeId == VibeSessionMode.AUTO_APPROVE
+        # Update session mode tracking
+        session.mode_id = params.modeId
+
+        # Set the mode on the agent
+        session.agent.set_mode(params.modeId)
+
+        # Update approval callback based on mode's is_dangerous property
+        mode_config = session.agent.get_current_mode()
+        if mode_config.is_dangerous:
+            session.agent.approval_callback = None
+        else:
+            session.agent.approval_callback = self._create_approval_callback(
+                session.agent.session_id
+            )
 
         return SetSessionModeResponse()
 

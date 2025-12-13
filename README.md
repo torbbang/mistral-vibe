@@ -119,7 +119,7 @@ You can start Vibe with a prompt with the following command:
 vibe "Refactor the main function in cli/main.py to be more modular."
 ```
 
-**Note**: The `--auto-approve` flag automatically approves all tool executions without prompting. In interactive mode, you can also toggle auto-approve on/off using `Shift+Tab`.
+**Note**: The `--auto-approve` flag starts Vibe in Auto-Approve mode, which automatically approves all tool executions. You can cycle through different modes using `Shift+Tab` (see Modes section below).
 
 ### Programmatic Mode
 
@@ -134,6 +134,34 @@ by default it will use `auto-approve` mode.
 ### Slash Commands
 
 Use slash commands for meta-actions and configuration changes during a session.
+
+### Modes
+
+Vibe operates in different modes that control tool execution approval. Cycle through modes with `Shift+Tab` or set with `--mode <mode-name>`.
+
+**Predefined modes (safest to most permissive):**
+- **Normal**: Requires approval for all tools (default)
+- **Plan**: Auto-approves read-only tools, blocks writes
+- **Accept-Edits**: Auto-approves file operations within project directory
+- **Auto-Approve**: Auto-approves all tools (use with caution)
+
+**Custom modes:** Define in `config.toml` with tool permissions and path restrictions.
+
+Example custom mode:
+```toml
+[modes.docs-only]
+name = "Docs Only"
+ui_indicator = "⏵D"
+
+[modes.docs-only.tool_permissions]
+grep = "always"
+read_file = "always"
+write_file = "always"
+"*" = "never"
+
+[modes.docs-only.path_restrictions]
+allowed_patterns = ["**/*.md", "**/*.mdx"]
+```
 
 ## Configuration
 

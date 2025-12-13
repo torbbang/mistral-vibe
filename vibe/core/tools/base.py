@@ -281,3 +281,25 @@ class BaseTool[
         Base implementation returns None. Override in subclasses for specific logic.
         """
         return None
+
+    def _is_single_path_within_workdir(self, path_str: str) -> bool:
+        """Check if a path is within the workdir."""
+        try:
+            file_path = Path(path_str).expanduser()
+            if not file_path.is_absolute():
+                file_path = self.config.effective_workdir / file_path
+            file_path = file_path.resolve()
+
+            workdir = self.config.effective_workdir.resolve()
+            file_path.relative_to(workdir)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def is_path_within_workdir(self, args: ToolArgs) -> bool:
+        """Check if file paths in args are within the workdir."""
+        return True
+
+    def get_file_paths(self, args: ToolArgs) -> list[Path]:
+        """Extract file paths from tool arguments."""
+        return []

@@ -114,6 +114,17 @@ class SearchReplace(
     def get_status_text(cls) -> str:
         return "Editing files"
 
+    def is_path_within_workdir(self, args: SearchReplaceArgs) -> bool:
+        """Check if the file path is within the project workdir."""
+        return self._is_single_path_within_workdir(args.file_path)
+
+    def get_file_paths(self, args: SearchReplaceArgs) -> list[Path]:
+        """Extract file path from search/replace arguments for pattern validation."""
+        file_path = Path(args.file_path).expanduser()
+        if not file_path.is_absolute():
+            file_path = self.config.effective_workdir / file_path
+        return [file_path.resolve()]
+
     @final
     async def run(self, args: SearchReplaceArgs) -> SearchReplaceResult:
         file_path, search_replace_blocks = self._prepare_and_validate_args(args)

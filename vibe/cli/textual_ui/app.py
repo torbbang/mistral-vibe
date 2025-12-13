@@ -47,6 +47,7 @@ from vibe.core.agent import Agent
 from vibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from vibe.core.config import VibeConfig
 from vibe.core.config_path import HISTORY_FILE
+from vibe.core.modes import ModeID
 from vibe.core.tools.base import BaseToolConfig, ToolPermission
 from vibe.core.types import ApprovalResponse, LLMMessage, ResumeSessionInfo, Role
 from vibe.core.utils import (
@@ -83,6 +84,7 @@ class VibeApp(App):
         self,
         config: VibeConfig,
         auto_approve: bool = False,
+        initial_mode: str | None = None,
         enable_streaming: bool = False,
         initial_prompt: str | None = None,
         loaded_messages: list[LLMMessage] | None = None,
@@ -94,7 +96,17 @@ class VibeApp(App):
     ) -> None:
         super().__init__(**kwargs)
         self.config = config
-        self.auto_approve = auto_approve
+
+        # Determine initial mode
+        match initial_mode:
+            case str() as mode:
+                self.initial_mode_id = mode
+            case None if auto_approve:
+                self.initial_mode_id = ModeID.AUTO_APPROVE
+            case None:
+                self.initial_mode_id = config.initial_mode
+
+        self.auto_approve = (self.initial_mode_id == ModeID.AUTO_APPROVE)
         self.enable_streaming = enable_streaming
         self.agent: Agent | None = None
         self._agent_running = False
@@ -142,7 +154,7 @@ class VibeApp(App):
 
         with Horizontal(id="loading-area"):
             yield Static(id="loading-area-content")
-            yield ModeIndicator(auto_approve=self.auto_approve)
+            yield ModeIndicator(mode_id=self.initial_mode_id)
 
         yield Static(id="todo-area")
 
@@ -173,6 +185,10 @@ class VibeApp(App):
         self._chat_input_container = self.query_one(ChatInputContainer)
         self._mode_indicator = self.query_one(ModeIndicator)
         self._context_progress = self.query_one(ContextProgress)
+
+        # Set initial mode border color
+        if self._chat_input_container:
+            self._chat_input_container.set_mode_border(self.initial_mode_id)
 
         if self.config.auto_compact_threshold > 0:
             self._context_progress.tokens = TokenState(
@@ -419,11 +435,11 @@ class VibeApp(App):
         try:
             agent = Agent(
                 self.config,
-                auto_approve=self.auto_approve,
+                initial_mode=self.initial_mode_id,
                 enable_streaming=self.enable_streaming,
             )
 
-            if not self.auto_approve:
+            if self.initial_mode_id != ModeID.AUTO_APPROVE:
                 agent.approval_callback = self._approval_callback
 
             if self._loaded_messages:
@@ -438,6 +454,10 @@ class VibeApp(App):
                 )
 
             self.agent = agent
+            # Update mode indicator with agent's available modes
+            if self._mode_indicator and agent:
+                self._mode_indicator.update_available_modes(agent.list_modes())
+                self._mode_indicator.set_mode(agent.get_current_mode().id)
         except asyncio.CancelledError:
             self.agent = None
             return
@@ -929,24 +949,45 @@ class VibeApp(App):
             await result.render_result()
 
     def action_cycle_mode(self) -> None:
+        """Cycle to the next operational mode."""
         if self._current_bottom_app != BottomApp.Input:
             return
 
-        self.auto_approve = not self.auto_approve
+        if not self._mode_indicator:
+            return
 
-        if self._mode_indicator:
-            self._mode_indicator.set_auto_approve(self.auto_approve)
+        # Cycle to next mode
+        new_mode_id = self._mode_indicator.cycle_mode()
 
-        if self._chat_input_container:
-            self._chat_input_container.set_show_warning(self.auto_approve)
+        # Update auto_approve flag for backward compatibility
+        self.auto_approve = (new_mode_id == ModeID.AUTO_APPROVE)
 
+        # Update agent mode if agent exists
         if self.agent:
-            self.agent.auto_approve = self.auto_approve
+            try:
+                self.agent.set_mode(new_mode_id)
+                mode_config = self.agent.get_current_mode()
 
-            if self.auto_approve:
-                self.agent.approval_callback = None
-            else:
-                self.agent.approval_callback = self._approval_callback
+                # Update chat input border color for mode
+                if self._chat_input_container:
+                    self._chat_input_container.set_mode_border(new_mode_id)
+                    # Keep warning border for dangerous modes
+                    self._chat_input_container.set_show_warning(mode_config.is_dangerous)
+
+                # Update approval callback based on mode
+                if new_mode_id == ModeID.AUTO_APPROVE:
+                    self.agent.approval_callback = None
+                else:
+                    self.agent.approval_callback = self._approval_callback
+            except ValueError:
+                # Mode not found, ignore
+                pass
+        elif self._chat_input_container:
+            # No agent yet, update border without is_dangerous check
+            self._chat_input_container.set_mode_border(new_mode_id)
+            # Hardcoded fallback for when agent doesn't exist yet
+            is_dangerous = new_mode_id in {ModeID.AUTO_APPROVE, ModeID.ACCEPT_EDITS}
+            self._chat_input_container.set_show_warning(is_dangerous)
 
         self._focus_current_bottom_app()
 
@@ -1114,6 +1155,7 @@ class VibeApp(App):
 def run_textual_ui(
     config: VibeConfig,
     auto_approve: bool = False,
+    initial_mode: str | None = None,
     enable_streaming: bool = False,
     initial_prompt: str | None = None,
     loaded_messages: list[LLMMessage] | None = None,
@@ -1124,6 +1166,7 @@ def run_textual_ui(
     app = VibeApp(
         config=config,
         auto_approve=auto_approve,
+        initial_mode=initial_mode,
         enable_streaming=enable_streaming,
         initial_prompt=initial_prompt,
         loaded_messages=loaded_messages,

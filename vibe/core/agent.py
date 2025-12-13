@@ -4,9 +4,12 @@ import asyncio
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable
 from enum import StrEnum, auto
+import logging
 import time
 from typing import Any, cast
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 
@@ -25,6 +28,14 @@ from vibe.core.middleware import (
     PriceLimitMiddleware,
     ResetReason,
     TurnLimitMiddleware,
+)
+from vibe.core.modes import (
+    ModeConfig,
+    ModeID,
+    PREDEFINED_MODES,
+    build_mode_registry,
+    get_mode_config,
+    list_available_modes,
 )
 from vibe.core.prompts import UtilityPrompt
 from vibe.core.system_prompt import get_universal_system_prompt
@@ -89,6 +100,7 @@ class Agent:
         self,
         config: VibeConfig,
         auto_approve: bool = False,
+        initial_mode: str | None = None,
         message_observer: Callable[[LLMMessage], None] | None = None,
         max_turns: int | None = None,
         max_price: float | None = None,
@@ -96,6 +108,16 @@ class Agent:
         enable_streaming: bool = False,
     ) -> None:
         self.config = config
+
+        self._mode_registry = build_mode_registry(getattr(config, "modes", {}))
+        mode_id = initial_mode or (ModeID.AUTO_APPROVE if auto_approve else config.initial_mode)
+        if mode_id not in self._mode_registry:
+            logger.warning(f"Invalid initial mode '{mode_id}', using '{ModeID.NORMAL}'")
+            mode_id = ModeID.NORMAL
+
+        self._current_mode_id = mode_id
+        self._previous_mode_id: str | None = None  # Track previous mode for auto_approve setter
+        self._mode_config = self._mode_registry[mode_id]
 
         self.tool_manager = ToolManager(config)
         self.format_handler = APIToolFormatHandler()
@@ -125,7 +147,8 @@ class Agent:
         except ValueError:
             pass
 
-        self.auto_approve = auto_approve
+        # Maintain backward compatibility: auto_approve reflects current mode
+        self._auto_approve = (self._current_mode_id == ModeID.AUTO_APPROVE)
         self.approval_callback: ApprovalCallback | None = None
 
         self.session_id = str(uuid4())
@@ -144,6 +167,42 @@ class Agent:
         provider = self.config.get_provider_for_model(active_model)
         timeout = self.config.api_timeout
         return BACKEND_FACTORY[provider.backend](provider=provider, timeout=timeout)
+
+    @property
+    def auto_approve(self) -> bool:
+        """Get auto-approve status (backward compatibility property)."""
+        return self._auto_approve
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        """Set auto-approve status by switching modes (backward compatibility)."""
+        if value:
+            self.set_mode(ModeID.AUTO_APPROVE)
+        else:
+            # Restore previous mode if available, otherwise default to normal
+            if self._previous_mode_id and self._previous_mode_id != ModeID.AUTO_APPROVE:
+                restore_mode = self._previous_mode_id
+            else:
+                restore_mode = ModeID.NORMAL
+            self.set_mode(restore_mode)
+
+    def set_mode(self, mode_id: str) -> None:
+        """Switch to a different operational mode."""
+        self._mode_config = get_mode_config(mode_id, self._mode_registry)  # Raises if not found
+        # Track previous mode before switching
+        if self._current_mode_id != mode_id:
+            self._previous_mode_id = self._current_mode_id
+        self._current_mode_id = mode_id
+        # Update backward compatibility flag
+        self._auto_approve = (mode_id == ModeID.AUTO_APPROVE)
+
+    def get_current_mode(self) -> ModeConfig:
+        """Get the current mode configuration."""
+        return self._mode_config
+
+    def list_modes(self) -> list[ModeConfig]:
+        """Get list of all available modes."""
+        return list_available_modes(self._mode_registry)
 
     def add_message(self, message: LLMMessage) -> None:
         self.messages.append(message)
@@ -702,12 +761,19 @@ class Agent:
     async def _should_execute_tool(
         self, tool: BaseTool, args: dict[str, Any], tool_call_id: str
     ) -> ToolDecision:
-        if self.auto_approve:
-            return ToolDecision(verdict=ToolExecutionResponse.EXECUTE)
-
+        tool_name = tool.get_name()
         args_model, _ = tool._get_tool_args_results()
         validated_args = args_model.model_validate(args)
 
+        # Check mode-specific permission override
+        mode_permission = self._mode_config.get_tool_permission(tool_name)
+        if mode_permission is not None:
+            return await self._handle_mode_permission(
+                tool, validated_args, tool_call_id, mode_permission
+            )
+
+        # Fall back to normal permission checking
+        # Check allowlist/denylist
         allowlist_denylist_result = tool.check_allowlist_denylist(validated_args)
         if allowlist_denylist_result == ToolPermission.ALWAYS:
             return ToolDecision(verdict=ToolExecutionResponse.EXECUTE)
@@ -716,12 +782,11 @@ class Agent:
             denylist_str = ", ".join(repr(pattern) for pattern in denylist_patterns)
             return ToolDecision(
                 verdict=ToolExecutionResponse.SKIP,
-                feedback=f"Tool '{tool.get_name()}' blocked by denylist: [{denylist_str}]",
+                feedback=f"Tool '{tool_name}' blocked by denylist: [{denylist_str}]",
             )
 
-        tool_name = tool.get_name()
+        # Check global tool permission
         perm = self.tool_manager.get_tool_config(tool_name).permission
-
         if perm is ToolPermission.ALWAYS:
             return ToolDecision(verdict=ToolExecutionResponse.EXECUTE)
         if perm is ToolPermission.NEVER:
@@ -730,31 +795,130 @@ class Agent:
                 feedback=f"Tool '{tool_name}' is permanently disabled",
             )
 
+        # Ask for approval
         return await self._ask_approval(tool_name, args, tool_call_id)
 
+    async def _handle_mode_permission(
+        self,
+        tool: BaseTool,
+        args: Any,
+        tool_call_id: str,
+        permission: ToolPermission,
+    ) -> ToolDecision:
+        tool_name = tool.get_name()
+
+        if permission == ToolPermission.ALWAYS:
+            # Check path restrictions if applicable
+            if self._mode_config.path_restrictions and not self._validate_path_restrictions(
+                tool, args
+            ):
+                # Path violation - require approval
+                return await self._ask_approval(
+                    tool_name,
+                    args if isinstance(args, dict) else args.model_dump(),
+                    tool_call_id,
+                    feedback="File path outside allowed boundaries for current mode",
+                )
+            return ToolDecision(verdict=ToolExecutionResponse.EXECUTE)
+
+        elif permission == ToolPermission.NEVER:
+            return ToolDecision(
+                verdict=ToolExecutionResponse.SKIP,
+                feedback=f"Tool '{tool_name}' disabled in {self._mode_config.name} mode",
+            )
+
+        # Shouldn't reach here
+        return await self._ask_approval(
+            tool_name, args if isinstance(args, dict) else args.model_dump(), tool_call_id
+        )
+
+    def _matches_pattern(self, path: Path, pattern: str) -> bool:
+        # Direct match
+        if path.match(pattern):
+            return True
+
+        # For patterns starting with **/, also try without the **/ prefix
+        if pattern.startswith("**/"):
+            simplified_pattern = pattern[3:]
+            if path.match(simplified_pattern):
+                return True
+
+        return False
+
+    def _validate_path_restrictions(self, tool: BaseTool, args: Any) -> bool:
+        if not self._mode_config.path_restrictions:
+            return True
+
+        restrictions = self._mode_config.path_restrictions
+
+        # Check workdir restriction
+        if restrictions.restrict_to_workdir:
+            if not tool.is_path_within_workdir(args):
+                return False
+
+        # Check pattern-based restrictions (allowed_patterns, denied_patterns)
+        file_paths = tool.get_file_paths(args)
+        if not file_paths:
+            return True  # No paths to validate
+
+        workdir = self.config.effective_workdir.resolve()
+
+        for file_path in file_paths:
+            # Make path relative to workdir
+            try:
+                rel_path = file_path.relative_to(workdir)
+            except ValueError:
+                # Path is outside workdir, use absolute path
+                rel_path = file_path
+
+            # Check allowed patterns (must match at least one if not default)
+            if restrictions.allowed_patterns != ["**/*"]:
+                if not any(
+                    self._matches_pattern(rel_path, pattern)
+                    for pattern in restrictions.allowed_patterns
+                ):
+                    return False
+
+            # Check denied patterns (must NOT match any)
+            if restrictions.denied_patterns:
+                if any(
+                    self._matches_pattern(rel_path, pattern)
+                    for pattern in restrictions.denied_patterns
+                ):
+                    return False
+
+        return True
+
     async def _ask_approval(
-        self, tool_name: str, args: dict[str, Any], tool_call_id: str
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        tool_call_id: str,
+        feedback: str | None = None,
     ) -> ToolDecision:
         if not self.approval_callback:
             return ToolDecision(
                 verdict=ToolExecutionResponse.SKIP,
-                feedback="Tool execution not permitted.",
+                feedback=feedback or "Tool execution not permitted.",
             )
         if asyncio.iscoroutinefunction(self.approval_callback):
             async_callback = cast(AsyncApprovalCallback, self.approval_callback)
-            response, feedback = await async_callback(tool_name, args, tool_call_id)
+            response, user_feedback = await async_callback(tool_name, args, tool_call_id)
         else:
             sync_callback = cast(SyncApprovalCallback, self.approval_callback)
-            response, feedback = sync_callback(tool_name, args, tool_call_id)
+            response, user_feedback = sync_callback(tool_name, args, tool_call_id)
+
+        # Combine our feedback with user's feedback if provided
+        combined_feedback = feedback or user_feedback
 
         match response:
             case ApprovalResponse.YES:
                 return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE, feedback=feedback
+                    verdict=ToolExecutionResponse.EXECUTE, feedback=combined_feedback
                 )
             case ApprovalResponse.NO:
                 return ToolDecision(
-                    verdict=ToolExecutionResponse.SKIP, feedback=feedback
+                    verdict=ToolExecutionResponse.SKIP, feedback=combined_feedback
                 )
 
     def _clean_message_history(self) -> None:
